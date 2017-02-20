@@ -35,8 +35,9 @@ def build_gan(sampled_latent_variables, real_data, generator=None, discriminator
 
     with tf.variable_scope('GenerativeNet'):
         gen_out = generator(sampled_latent_variables)
-    with tf.variable_scope('DiscriminativeNet', reuse=True):
+    with tf.variable_scope('DiscriminativeNet'):
         dis_out_real = discriminator(real_data)
+    with tf.variable_scope('DiscriminativeNet', reuse=True):
         dis_out_latent = discriminator(gen_out)
 
     return gen_out, dis_out_latent, dis_out_real
