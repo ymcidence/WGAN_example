@@ -1,5 +1,8 @@
 import tensorflow as tf
 
+MODE_FLAG_TRAIN = 'Train'
+MODE_FLAG_TEST = 'Test'
+
 
 def build_generator(input_tensor):
     """
@@ -44,6 +47,12 @@ def build_gan(sampled_latent_variables, real_data, generator=None, discriminator
 
 
 def loss_func(dis_out_latent, dis_out_real):
+    """
+    To set the adversarial loss functions
+    :param dis_out_latent:
+    :param dis_out_real:
+    :return:
+    """
     loss_latent = tf.reduce_mean(1. - tf.sigmoid(dis_out_latent))
     loss_real = tf.reduce_mean(tf.sigmoid(dis_out_real))
     loss_gen = tf.reduce_mean(tf.sigmoid(dis_out_latent))
@@ -52,19 +61,38 @@ def loss_func(dis_out_latent, dis_out_real):
 
 
 class Gan(object):
-    def __init__(self, sess=tf.Session()):
+    def __init__(self, batch_size, sess=tf.Session(), mode=MODE_FLAG_TRAIN, restore_file=None):
+        """
+        A generative adversarial network class for training or test
+        :param batch_size:
+        :param sess: A TensorFlow Session
+        :param mode: MODE_FLAG_TRAIN or MODE_FLAG_TEST
+        :param restore_file: Path to the previously trained model
+        """
         self.sess = sess
-        self.batch_shape = [None, 128, 128, 3]
+        self.mode = mode
+        self.restore_file = restore_file
+        self.batch_shape = [batch_size, 128, 128, 3]
         self.real_data = tf.placeholder(tf.float32, self.batch_shape)
-        self.sampled_latent_variables = tf.random_normal(self.batch_shape, stddev=0.1)
+        self.sampled_latent_variables = tf.random_normal([batch_size, 128], stddev=0.05)
         self.nets = self._build_net()
-        self.loss = self._get_loss()
-        self.g_step = tf.Variable(0, trainable=False)
-        self.d_step = tf.Variable(0, trainable=False)
-        self.ops = self._get_opt()
+        if mode == MODE_FLAG_TRAIN:
+            self.loss = self._get_loss()
+            self.g_step = tf.Variable(0, trainable=False)
+            self.d_step = tf.Variable(0, trainable=False)
+            self.ops = self._get_opt()
+        else:
+            assert self.restore_file is not None
+            init_op = tf.global_variables_initializer()
+            self.sess.run(init_op)
+            self.restore_file()
 
     def _build_net(self):
-        return build_gan(self.sampled_latent_variables, self.real_data)
+        if self.mode == MODE_FLAG_TRAIN:
+            return build_gan(self.sampled_latent_variables, self.real_data)
+        else:
+            with tf.variable_scope('GenerativeNet'):
+                return build_generator(self.sampled_latent_variables)
 
     def _get_loss(self):
         return loss_func(self.nets[1], self.nets[2])
@@ -78,26 +106,36 @@ class Gan(object):
         discriminative_step = opt.minimize(self.loss[1], global_step=self.d_step, var_list=train_list_dis)
         return generative_step, discriminative_step
 
-    @staticmethod
-    def _restore(restore_file):
-        return restore_file
+    def _restore(self):
+        if self.mode == MODE_FLAG_TRAIN:
+            save_list = tf.trainable_variables()
+        else:
+            save_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='GenerativeNet')
+        saver = tf.train.Saver(var_list=save_list)
+        return saver.restore(self.sess, self.restore_file)
 
-    def training_loop(self, batch_reader, k=1, max_loop=10000, restore_file=None):
+    def training_loop(self, batch_reader, k=1, max_loop=10000):
         """
         The main training loop of gan
         :param batch_reader: A data reading function pointer
         :param k: The training interval of the generative net
         :param max_loop:
-        :param restore_file:
         :return:
         """
         init_op = tf.global_variables_initializer()
         self.sess.run(init_op)
-        if restore_file is not None:
-            self._restore(restore_file)
+        if self.restore_file is not None:
+            self._restore()
         for i in range(max_loop):
             this_batch = batch_reader(i)
             loss_d, _ = self.sess.run([self.loss[1], self.ops[1]],
                                       feed_dict={self.real_data: this_batch['batch_image']})
             if (i + 1) % k == 0:
                 loss_g, _ = self.sess.run([self.loss[0], self.ops[0]])
+
+    def forward(self):
+        if self.mode == MODE_FLAG_TRAIN:
+            to_run = self.nets[0]
+        else:
+            to_run = self.nets
+        return self.sess.run(to_run)
