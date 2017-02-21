@@ -25,7 +25,7 @@ def build_generator(input_tensor):
     t_conv_4 = layers.deconv_relu_layer('tConv4', t_conv_3, kernel_size=5, stride=2, output_dim=16)
     # t_conv_5: N*32H*32W*3
     t_conv_5 = layers.deconv_layer('tConv5', t_conv_4, kernel_size=5, stride=2, output_dim=3)
-    return tf.nn.relu(t_conv_5)
+    return tf.sigmoid(t_conv_5)
 
 
 def build_discriminator(input_tensor):
@@ -42,9 +42,9 @@ def build_discriminator(input_tensor):
     pool_3 = layers.pooling_layer('Pool3', conv_3, kernel_size=4, stride=1)
     fc_1 = layers.fc_relu_layer('Fc1', pool_3, output_dim=256)
     fc_2 = layers.fc_relu_layer('Fc2', fc_1, output_dim=256)
-    fc_3 = layers.fc_layer('Fc3', fc_2, output_dim=1)
+    fc_3 = layers.fc_layer('Fc3', fc_2, output_dim=128)
 
-    return tf.sigmoid(fc_3)
+    return fc_3
 
 
 def build_gan(sampled_latent_variables, real_data, generator=None, discriminator=None):
@@ -78,9 +78,9 @@ def loss_func(dis_out_latent, dis_out_real):
     :param dis_out_real:
     :return:
     """
-    loss_latent = tf.reduce_mean(1. - dis_out_latent)
+    loss_latent = tf.reduce_mean(dis_out_latent)
     loss_real = tf.reduce_mean(dis_out_real)
-    loss_dis = -1. * (loss_latent + loss_real)
+    loss_dis = (loss_real - loss_latent)
     return loss_latent, loss_dis
 
 
@@ -115,7 +115,7 @@ class Gan(object):
         if self.mode == MODE_FLAG_TRAIN:
             nets = build_gan(self.sampled_latent_variables, self.real_data)
             tf.summary.image(NAME_SCOPE_GENERATIVE_NET + '/Image', nets[0])
-            tf.summary.scalar(NAME_SCOPE_GENERATIVE_NET + '/ImageMean', tf.reduce_mean(nets[0]))
+            # tf.summary.scalar(NAME_SCOPE_GENERATIVE_NET + '/ImageMean', tf.reduce_mean(nets[0]))
             tf.summary.histogram(NAME_SCOPE_GENERATIVE_NET + '/SampledData', nets[1])
             tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/SampledData', nets[1])
             tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/RealData', nets[2])
@@ -130,20 +130,24 @@ class Gan(object):
 
     def _get_loss(self):
         losses = loss_func(self.nets[1], self.nets[2])
-        tf.summary.scalar(NAME_SCOPE_GENERATIVE_NET + '/Logits', losses[0])
-        tf.summary.scalar(NAME_SCOPE_DISCRIMINATIVE_NET + '/Logits', losses[1])
+        tf.summary.scalar(NAME_SCOPE_GENERATIVE_NET + '/Loss', losses[0])
+        tf.summary.scalar(NAME_SCOPE_DISCRIMINATIVE_NET + '/Loss', losses[1])
 
         return losses
 
     def _get_opt(self):
-        opt = tf.train.AdamOptimizer(learning_rate=0.00001)
+        opt = tf.train.RMSPropOptimizer(learning_rate=0.00001)
         train_list_gen = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=NAME_SCOPE_GENERATIVE_NET)
         generative_step = opt.minimize(self.loss[0], global_step=self.g_step, var_list=train_list_gen,
                                        aggregation_method=tf.AggregationMethod.EXPERIMENTAL_ACCUMULATE_N)
 
         train_list_dis = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=NAME_SCOPE_DISCRIMINATIVE_NET)
-        discriminative_step = opt.minimize(self.loss[1], global_step=self.d_step, var_list=train_list_dis,
-                                           aggregation_method=tf.AggregationMethod.EXPERIMENTAL_ACCUMULATE_N)
+        discriminative_step_provisional = opt.minimize(self.loss[1], global_step=self.d_step, var_list=train_list_dis,
+                                                       aggregation_method=tf.AggregationMethod.EXPERIMENTAL_ACCUMULATE_N)
+
+        dis_clipping = [tf.assign(var, tf.clip_by_value(var, -0.05, 0.05)) for var in train_list_dis]
+        with tf.control_dependencies([discriminative_step_provisional]):
+            discriminative_step = tf.tuple(dis_clipping)
         return generative_step, discriminative_step
 
     def _restore(self):
@@ -180,12 +184,11 @@ class Gan(object):
                 [self.loss[1], self.ops[1], summary_dis, self.d_step],
                 feed_dict={self.real_data: this_batch['batch_image']})
             writer.add_summary(summary_dis_out, global_step=d_step_out)
-            print('Iteration ' + str(i) + ' d-step loss:' + str(loss_d))
             if (i + 1) % k == 0:
                 loss_g, _, summary_gen_out, g_step_out = self.sess.run(
                     [self.loss[0], self.ops[0], summary_gen, self.g_step])
                 writer.add_summary(summary_gen_out, global_step=g_step_out)
-                print('Iteration ' + str(i) + ' g-step loss:' + str(loss_g))
+                print('Iteration ' + str(i) + ' d-step loss:' + str(loss_d) + ' g-step loss:' + str(loss_g))
 
             if (i + 1) % 10000 == 0:
                 saver.save(self.sess, snapshot_path + '/YMModel', i)
@@ -200,7 +203,7 @@ class Gan(object):
 
 if __name__ == '__main__':
     """
-    This is the test routine of the GAN.
+    This is the test routine of the WGAN.
     """
     print('Now we are going to train the network.')
     import scipy.io as sio
@@ -221,4 +224,4 @@ if __name__ == '__main__':
     config.gpu_options.allow_growth = True
     this_session = tf.Session(config=config)
     model = Gan(20, this_session)
-    model.training_loop(reader, k=1)
+    model.training_loop(reader, k=3)
