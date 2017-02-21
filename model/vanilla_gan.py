@@ -98,6 +98,10 @@ def loss_func(dis_out_latent, dis_out_real):
         tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(dis_out_latent), logits=dis_out_latent))
     loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(dis_out_real), logits=dis_out_real))
     loss_dis = loss_latent_dis + loss_real
+
+    tf.summary.scalar(NAME_SCOPE_GENERATIVE_NET + '/Loss', loss_latent_gen)
+    tf.summary.scalar(NAME_SCOPE_DISCRIMINATIVE_NET + '/LossReal', loss_real)
+    tf.summary.scalar(NAME_SCOPE_DISCRIMINATIVE_NET + '/LossTotal', loss_dis)
     return loss_latent_gen, loss_dis
 
 
@@ -132,14 +136,11 @@ class Gan(object):
         if self.mode == MODE_FLAG_TRAIN:
             nets = build_gan(self.sampled_latent_variables, self.real_data)
             tf.summary.image(NAME_SCOPE_GENERATIVE_NET + '/Image', nets[0])
-            tf.summary.scalar(NAME_SCOPE_GENERATIVE_NET + '/ImageMean', tf.reduce_mean(nets[0]))
-            tf.summary.histogram(NAME_SCOPE_GENERATIVE_NET + '/SampledData', nets[1])
-            tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/SampledData', nets[1])
-            tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/RealData', nets[2])
-            # tf.add_to_collection(tf.GraphKeys.SUMMARIES, image_summary)
-            # tf.add_to_collection(tf.GraphKeys.SUMMARIES, hist_summary_sampled_1)
-            # tf.add_to_collection(tf.GraphKeys.SUMMARIES, hist_summary_sampled_2)
-            # tf.add_to_collection(tf.GraphKeys.SUMMARIES, hist_summary_real)
+            tf.summary.image(NAME_SCOPE_DISCRIMINATIVE_NET + '/Image', self.real_data)
+            tf.summary.histogram(NAME_SCOPE_GENERATIVE_NET + '/LogicSampledDiscrimination', nets[1])
+            tf.summary.histogram(NAME_SCOPE_GENERATIVE_NET + '/HistGenerated', nets[0] * 256.)
+            tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/LogicRealDiscrimination', nets[2])
+            tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/HistReal', self.real_data)
             return nets
         else:
             with tf.variable_scope(NAME_SCOPE_GENERATIVE_NET):
@@ -147,9 +148,6 @@ class Gan(object):
 
     def _get_loss(self):
         losses = loss_func(self.nets[1], self.nets[2])
-        tf.summary.scalar(NAME_SCOPE_GENERATIVE_NET + '/Logits', losses[0])
-        tf.summary.scalar(NAME_SCOPE_DISCRIMINATIVE_NET + '/Logits', losses[1])
-
         return losses
 
     def _get_opt(self):
