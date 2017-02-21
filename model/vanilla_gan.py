@@ -20,7 +20,6 @@ def build_generator(input_tensor):
     # t_conv_1: N*2H*2W*128
     # t_conv_1 = layers.deconv_relu_layer('tConv1', input_tensor, kernel_size=3, stride=2, output_dim=128)
     t_conv_1 = tf.layers.conv2d_transpose(input_tensor, 128, 3, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
-                                          activity_regularizer=tf.layers.batch_normalization,
                                           bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
     # t_conv_2: N*4H*4W*64
     t_conv_2 = tf.layers.conv2d_transpose(t_conv_1, 128, 5, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
@@ -169,7 +168,7 @@ class Gan(object):
         saver = tf.train.Saver(var_list=save_list)
         return saver.restore(self.sess, self.restore_file)
 
-    def training_loop(self, batch_reader, k=1, max_loop=100000, summary_path='E:\\WorkSpace\\WorkSpace\\TrainingLogs',
+    def training_loop(self, batch_reader, k=1, max_loop=200000, summary_path='E:\\WorkSpace\\WorkSpace\\TrainingLogs',
                       snapshot_path='E:\\WorkSpace\\WorkSpace\\SavedModels\\GAN'):
         """
         The main training loop of gan
