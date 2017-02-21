@@ -15,23 +15,33 @@ def build_generator(input_tensor):
     :param input_tensor: D*128
     :return:
     """
+    weights_initializer = tf.random_normal_initializer(stddev=0.02)
+    biases_initializer = tf.constant_initializer(0.)
     # t_conv_1: N*2H*2W*128
-    t_conv_1 = layers.deconv_relu_layer('tConv1', input_tensor, kernel_size=3, stride=2, output_dim=64)
+    # t_conv_1 = layers.deconv_relu_layer('tConv1', input_tensor, kernel_size=3, stride=2, output_dim=128)
+    t_conv_1 = tf.layers.conv2d_transpose(input_tensor, 128, 3, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
+                                          activity_regularizer=tf.layers.batch_normalization,
+                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
     # t_conv_2: N*4H*4W*64
-    t_conv_2 = layers.deconv_relu_layer('tConv2', t_conv_1, kernel_size=5, stride=2, output_dim=64)
+    t_conv_2 = tf.layers.conv2d_transpose(t_conv_1, 128, 5, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
+                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
     # t_conv_3: N*8H*8W*32
-    t_conv_3 = layers.deconv_relu_layer('tConv3', t_conv_2, kernel_size=5, stride=2, output_dim=32)
+    t_conv_3 = tf.layers.conv2d_transpose(t_conv_2, 64, 5, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
+                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
     # t_conv_4: N*16H*16W*16
-    t_conv_4 = layers.deconv_relu_layer('tConv4', t_conv_3, kernel_size=5, stride=2, output_dim=16)
+    t_conv_4 = tf.layers.conv2d_transpose(t_conv_3, 64, 5, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
+                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
     # t_conv_5: N*32H*32W*3
-    t_conv_5 = layers.deconv_layer('tConv5', t_conv_4, kernel_size=5, stride=2, output_dim=3)
-    return tf.sigmoid(t_conv_5)
+    t_conv_5 = tf.layers.conv2d_transpose(t_conv_4, 3, 5, strides=(2, 2), padding='SAME', activation=tf.sigmoid,
+                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
+    return t_conv_5
 
 
-def build_discriminator(input_tensor):
+def build_discriminator(input_tensor, keep_prob):
     """
     To build the discriminative network
     :param input_tensor:
+    :param keep_prob:
     :return:
     """
     conv_1 = layers.conv_relu_layer('Conv1', input_tensor, kernel_size=3, stride=1, output_dim=32)
@@ -41,21 +51,30 @@ def build_discriminator(input_tensor):
     conv_3 = layers.conv_relu_layer('Conv3', pool_2, kernel_size=3, stride=1, output_dim=32)
     pool_3 = layers.pooling_layer('Pool3', conv_3, kernel_size=4, stride=1)
     fc_1 = layers.fc_relu_layer('Fc1', pool_3, output_dim=256)
+    fc_1 = tf.layers.batch_normalization(fc_1, training=True)
+    fc_1 = tf.nn.dropout(fc_1, keep_prob=keep_prob)
     fc_2 = layers.fc_relu_layer('Fc2', fc_1, output_dim=256)
+    fc_2 = tf.layers.batch_normalization(fc_2, training=True)
+    fc_2 = tf.nn.dropout(fc_2, keep_prob=keep_prob)
     fc_3 = layers.fc_layer('Fc3', fc_2, output_dim=128)
 
     return fc_3
 
 
-def build_gan(sampled_latent_variables, real_data, generator=None, discriminator=None):
+def build_gan(sampled_latent_variables, real_data, mode=MODE_FLAG_TRAIN, generator=None, discriminator=None):
     """
     A simple GAN
     :param sampled_latent_variables:
     :param real_data:
+    :param mode:
     :param generator:
     :param discriminator:
     :return:
     """
+    if mode == MODE_FLAG_TRAIN:
+        drop_prob = 0.5
+    else:
+        drop_prob = 1
     if generator is None:
         generator = build_generator
     if discriminator is None:
@@ -64,9 +83,9 @@ def build_gan(sampled_latent_variables, real_data, generator=None, discriminator
     with tf.variable_scope(NAME_SCOPE_GENERATIVE_NET):
         gen_out = generator(sampled_latent_variables)
     with tf.variable_scope(NAME_SCOPE_DISCRIMINATIVE_NET):
-        dis_out_real = discriminator(real_data)
+        dis_out_real = discriminator(real_data, keep_prob=drop_prob)
     with tf.variable_scope(NAME_SCOPE_DISCRIMINATIVE_NET, reuse=True):
-        dis_out_latent = discriminator(gen_out)
+        dis_out_latent = discriminator(gen_out, keep_prob=drop_prob)
 
     return gen_out, dis_out_latent, dis_out_real
 
@@ -84,7 +103,7 @@ def loss_func(dis_out_latent, dis_out_real):
     return loss_latent, loss_dis
 
 
-class Gan(object):
+class WGan(object):
     def __init__(self, batch_size, sess=tf.Session(), mode=MODE_FLAG_TRAIN, restore_file=None):
         """
         A generative adversarial network class for training or test
@@ -98,7 +117,7 @@ class Gan(object):
         self.restore_file = restore_file
         self.batch_shape = [batch_size, 64, 64, 3]
         self.real_data = tf.placeholder(tf.float32, self.batch_shape)
-        self.sampled_latent_variables = tf.random_normal([batch_size, 2, 2, 128], stddev=0.01)
+        self.sampled_latent_variables = tf.random_normal([batch_size, 2, 2, 128], stddev=1.)
         self.nets = self._build_net()
         if mode == MODE_FLAG_TRAIN:
             self.loss = self._get_loss()
@@ -113,16 +132,13 @@ class Gan(object):
 
     def _build_net(self):
         if self.mode == MODE_FLAG_TRAIN:
-            nets = build_gan(self.sampled_latent_variables, self.real_data)
+            nets = build_gan(self.sampled_latent_variables, self.real_data, mode=self.mode)
             tf.summary.image(NAME_SCOPE_GENERATIVE_NET + '/Image', nets[0])
-            # tf.summary.scalar(NAME_SCOPE_GENERATIVE_NET + '/ImageMean', tf.reduce_mean(nets[0]))
-            tf.summary.histogram(NAME_SCOPE_GENERATIVE_NET + '/SampledData', nets[1])
-            tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/SampledData', nets[1])
-            tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/RealData', nets[2])
-            # tf.add_to_collection(tf.GraphKeys.SUMMARIES, image_summary)
-            # tf.add_to_collection(tf.GraphKeys.SUMMARIES, hist_summary_sampled_1)
-            # tf.add_to_collection(tf.GraphKeys.SUMMARIES, hist_summary_sampled_2)
-            # tf.add_to_collection(tf.GraphKeys.SUMMARIES, hist_summary_real)
+            tf.summary.image(NAME_SCOPE_DISCRIMINATIVE_NET + '/Image', self.real_data)
+            tf.summary.histogram(NAME_SCOPE_GENERATIVE_NET + '/SampledDiscrimination', nets[1])
+            tf.summary.histogram(NAME_SCOPE_GENERATIVE_NET + '/GeneratedHist', nets[0] * 256.)
+            tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/RealDiscrimination', nets[2])
+            tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/RealHist', self.real_data)
             return nets
         else:
             with tf.variable_scope(NAME_SCOPE_GENERATIVE_NET):
@@ -145,7 +161,7 @@ class Gan(object):
         discriminative_step_provisional = opt.minimize(self.loss[1], global_step=self.d_step, var_list=train_list_dis,
                                                        aggregation_method=tf.AggregationMethod.EXPERIMENTAL_ACCUMULATE_N)
 
-        dis_clipping = [tf.assign(var, tf.clip_by_value(var, -0.05, 0.05)) for var in train_list_dis]
+        dis_clipping = [tf.assign(var, tf.clip_by_value(var, -0.1, 0.1)) for var in train_list_dis]
         with tf.control_dependencies([discriminative_step_provisional]):
             discriminative_step = tf.tuple(dis_clipping)
         return generative_step, discriminative_step
@@ -158,7 +174,7 @@ class Gan(object):
         saver = tf.train.Saver(var_list=save_list)
         return saver.restore(self.sess, self.restore_file)
 
-    def training_loop(self, batch_reader, k=1, max_loop=100000, summary_path='E:\\WorkSpace\\WorkSpace\\TrainingLogs',
+    def training_loop(self, batch_reader, k=1, max_loop=200000, summary_path='E:\\WorkSpace\\WorkSpace\\TrainingLogs',
                       snapshot_path='E:\\WorkSpace\\WorkSpace\\SavedModels\\GAN'):
         """
         The main training loop of gan
@@ -203,15 +219,15 @@ class Gan(object):
 
 if __name__ == '__main__':
     """
-    This is the test routine of the WGAN.
+    This is the test routine of the GAN.
     """
     print('Now we are going to train the network.')
     import scipy.io as sio
 
 
     def reader(i):
-        total_batches = 301
-        data_folder = 'E:\\WorkSpace\\Data\\images\\Batches\\'
+        total_batches = 1000
+        data_folder = 'E:\\WorkSpace\\Data\\Face\\Batch\\'
         file_name = data_folder + 'batch_' + str(i % total_batches + 1) + '.mat'
         mat_file = sio.loadmat(file_name)
         batch = dict()
@@ -223,5 +239,5 @@ if __name__ == '__main__':
     config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
     config.gpu_options.allow_growth = True
     this_session = tf.Session(config=config)
-    model = Gan(20, this_session)
-    model.training_loop(reader, k=3)
+    model = WGan(20, this_session)
+    model.training_loop(reader, k=1)

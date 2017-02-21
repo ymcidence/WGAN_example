@@ -15,23 +15,33 @@ def build_generator(input_tensor):
     :param input_tensor: D*128
     :return:
     """
+    weights_initializer = tf.random_normal_initializer(stddev=0.02)
+    biases_initializer = tf.constant_initializer(0.)
     # t_conv_1: N*2H*2W*128
-    t_conv_1 = layers.deconv_relu_layer('tConv1', input_tensor, kernel_size=3, stride=2, output_dim=64)
+    # t_conv_1 = layers.deconv_relu_layer('tConv1', input_tensor, kernel_size=3, stride=2, output_dim=128)
+    t_conv_1 = tf.layers.conv2d_transpose(input_tensor, 128, 3, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
+                                          activity_regularizer=tf.layers.batch_normalization,
+                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
     # t_conv_2: N*4H*4W*64
-    t_conv_2 = layers.deconv_relu_layer('tConv2', t_conv_1, kernel_size=5, stride=2, output_dim=64)
+    t_conv_2 = tf.layers.conv2d_transpose(t_conv_1, 128, 5, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
+                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
     # t_conv_3: N*8H*8W*32
-    t_conv_3 = layers.deconv_relu_layer('tConv3', t_conv_2, kernel_size=5, stride=2, output_dim=32)
+    t_conv_3 = tf.layers.conv2d_transpose(t_conv_2, 64, 5, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
+                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
     # t_conv_4: N*16H*16W*16
-    t_conv_4 = layers.deconv_relu_layer('tConv4', t_conv_3, kernel_size=5, stride=2, output_dim=16)
+    t_conv_4 = tf.layers.conv2d_transpose(t_conv_3, 64, 5, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
+                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
     # t_conv_5: N*32H*32W*3
-    t_conv_5 = layers.deconv_layer('tConv5', t_conv_4, kernel_size=5, stride=2, output_dim=3)
-    return tf.nn.relu(t_conv_5)
+    t_conv_5 = tf.layers.conv2d_transpose(t_conv_4, 3, 5, strides=(2, 2), padding='SAME', activation=tf.sigmoid,
+                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
+    return t_conv_5
 
 
-def build_discriminator(input_tensor):
+def build_discriminator(input_tensor, keep_prob=0.5):
     """
     To build the discriminative network
     :param input_tensor:
+    :param keep_prob:
     :return:
     """
     conv_1 = layers.conv_relu_layer('Conv1', input_tensor, kernel_size=3, stride=1, output_dim=32)
@@ -41,8 +51,12 @@ def build_discriminator(input_tensor):
     conv_3 = layers.conv_relu_layer('Conv3', pool_2, kernel_size=3, stride=1, output_dim=32)
     pool_3 = layers.pooling_layer('Pool3', conv_3, kernel_size=4, stride=1)
     fc_1 = layers.fc_relu_layer('Fc1', pool_3, output_dim=256)
+    fc_1 = tf.layers.batch_normalization(fc_1, training=True)
+    fc_1 = tf.nn.dropout(fc_1, keep_prob=keep_prob)
     fc_2 = layers.fc_relu_layer('Fc2', fc_1, output_dim=256)
-    fc_3 = layers.fc_layer('Fc3', fc_2, output_dim=1)
+    fc_2 = tf.layers.batch_normalization(fc_2, training=True)
+    fc_2 = tf.nn.dropout(fc_2, keep_prob=keep_prob)
+    fc_3 = layers.fc_layer('Fc3', fc_2, output_dim=128)
 
     return tf.sigmoid(fc_3)
 
@@ -78,10 +92,13 @@ def loss_func(dis_out_latent, dis_out_real):
     :param dis_out_real:
     :return:
     """
-    loss_latent = tf.reduce_mean(1. - dis_out_latent)
-    loss_real = tf.reduce_mean(dis_out_real)
-    loss_dis = -1. * (loss_latent + loss_real)
-    return loss_latent, loss_dis
+    loss_latent_gen = tf.reduce_mean(
+        tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(dis_out_latent), logits=dis_out_latent))
+    loss_latent_dis = tf.reduce_mean(
+        tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(dis_out_latent), logits=dis_out_latent))
+    loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(dis_out_real), logits=dis_out_real))
+    loss_dis = loss_latent_dis + loss_real
+    return loss_latent_gen, loss_dis
 
 
 class Gan(object):
@@ -200,15 +217,15 @@ class Gan(object):
 
 if __name__ == '__main__':
     """
-    This is the test routine of the GAN.
+    This is the test routine of the WGAN.
     """
     print('Now we are going to train the network.')
     import scipy.io as sio
 
 
     def reader(i):
-        total_batches = 301
-        data_folder = 'E:\\WorkSpace\\Data\\images\\Batches\\'
+        total_batches = 1000
+        data_folder = 'E:\\WorkSpace\\Data\\Face\\Batch\\'
         file_name = data_folder + 'batch_' + str(i % total_batches + 1) + '.mat'
         mat_file = sio.loadmat(file_name)
         batch = dict()
