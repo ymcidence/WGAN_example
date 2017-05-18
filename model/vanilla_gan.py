@@ -1,238 +1,110 @@
 import tensorflow as tf
-import model.layers as layers
-import numpy as np
-from time import gmtime, strftime
-
-MODE_FLAG_TRAIN = 'Train'
-MODE_FLAG_TEST = 'Test'
-NAME_SCOPE_GENERATIVE_NET = 'GenerativeNet'
-NAME_SCOPE_DISCRIMINATIVE_NET = 'DiscriminativeNet'
+import os
+import gc
+from six.moves import xrange
+from model import net_factory as nf
 
 
-def build_generator(input_tensor):
-    """
-    To build the generative network
-    :param input_tensor: D*128
-    :return:
-    """
-    weights_initializer = tf.random_normal_initializer(stddev=0.02)
-    biases_initializer = tf.constant_initializer(0.)
-    # t_conv_1: N*2H*2W*128
-    # t_conv_1 = layers.deconv_relu_layer('tConv1', input_tensor, kernel_size=3, stride=2, output_dim=128)
-    t_conv_1 = tf.layers.conv2d_transpose(input_tensor, 128, 3, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
-                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
-    # t_conv_2: N*4H*4W*64
-    t_conv_2 = tf.layers.conv2d_transpose(t_conv_1, 128, 5, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
-                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
-    # t_conv_3: N*8H*8W*32
-    t_conv_3 = tf.layers.conv2d_transpose(t_conv_2, 64, 5, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
-                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
-    # t_conv_4: N*16H*16W*16
-    t_conv_4 = tf.layers.conv2d_transpose(t_conv_3, 64, 5, strides=(2, 2), padding='SAME', activation=tf.nn.relu,
-                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
-    # t_conv_5: N*32H*32W*3
-    t_conv_5 = tf.layers.conv2d_transpose(t_conv_4, 3, 5, strides=(2, 2), padding='SAME', activation=tf.sigmoid,
-                                          bias_initializer=biases_initializer, kernel_initializer=weights_initializer)
-    return t_conv_5
-
-
-def build_discriminator(input_tensor, keep_prob=0.5):
-    """
-    To build the discriminative network
-    :param input_tensor:
-    :param keep_prob:
-    :return:
-    """
-    conv_1 = layers.conv_relu_layer('Conv1', input_tensor, kernel_size=3, stride=1, output_dim=32)
-    pool_1 = layers.pooling_layer('Pool1', conv_1, kernel_size=2, stride=1)
-    conv_2 = layers.conv_relu_layer('Conv2', pool_1, kernel_size=3, stride=1, output_dim=32)
-    pool_2 = layers.pooling_layer('Pool2', conv_2, kernel_size=2, stride=1)
-    conv_3 = layers.conv_relu_layer('Conv3', pool_2, kernel_size=3, stride=1, output_dim=32)
-    pool_3 = layers.pooling_layer('Pool3', conv_3, kernel_size=4, stride=1)
-    fc_1 = layers.fc_relu_layer('Fc1', pool_3, output_dim=256)
-    fc_1 = tf.layers.batch_normalization(fc_1, training=True)
-    fc_1 = tf.nn.dropout(fc_1, keep_prob=keep_prob)
-    fc_2 = layers.fc_relu_layer('Fc2', fc_1, output_dim=256)
-    fc_2 = tf.layers.batch_normalization(fc_2, training=True)
-    fc_2 = tf.nn.dropout(fc_2, keep_prob=keep_prob)
-    fc_3 = layers.fc_layer('Fc3', fc_2, output_dim=128)
-
-    return tf.sigmoid(fc_3)
-
-
-def build_gan(sampled_latent_variables, real_data, generator=None, discriminator=None):
-    """
-    A simple GAN
-    :param sampled_latent_variables:
-    :param real_data:
-    :param generator:
-    :param discriminator:
-    :return:
-    """
-    if generator is None:
-        generator = build_generator
-    if discriminator is None:
-        discriminator = build_discriminator
-
-    with tf.variable_scope(NAME_SCOPE_GENERATIVE_NET):
-        gen_out = generator(sampled_latent_variables)
-    with tf.variable_scope(NAME_SCOPE_DISCRIMINATIVE_NET):
-        dis_out_real = discriminator(real_data)
-    with tf.variable_scope(NAME_SCOPE_DISCRIMINATIVE_NET, reuse=True):
-        dis_out_latent = discriminator(gen_out)
-
-    return gen_out, dis_out_latent, dis_out_real
-
-
-def loss_func(dis_out_latent, dis_out_real):
-    """
-    To set the adversarial loss functions
-    :param dis_out_latent:
-    :param dis_out_real:
-    :return:
-    """
-    loss_latent_gen = tf.reduce_mean(
-        tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(dis_out_latent), logits=dis_out_latent))
-    loss_latent_dis = tf.reduce_mean(
-        tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(dis_out_latent), logits=dis_out_latent))
-    loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(dis_out_real), logits=dis_out_real))
-    loss_dis = loss_latent_dis + loss_real
-
-    tf.summary.scalar(NAME_SCOPE_GENERATIVE_NET + '/Loss', loss_latent_gen)
-    tf.summary.scalar(NAME_SCOPE_DISCRIMINATIVE_NET + '/LossReal', loss_real)
-    tf.summary.scalar(NAME_SCOPE_DISCRIMINATIVE_NET + '/LossTotal', loss_dis)
-    return loss_latent_gen, loss_dis
-
-
-class Gan(object):
-    def __init__(self, batch_size, sess=tf.Session(), mode=MODE_FLAG_TRAIN, restore_file=None):
-        """
-        A generative adversarial network class for training or test
-        :param batch_size:
-        :param sess: A TensorFlow Session
-        :param mode: MODE_FLAG_TRAIN or MODE_FLAG_TEST
-        :param restore_file: Path to the previously trained model
-        """
-        self.sess = sess
-        self.mode = mode
-        self.restore_file = restore_file
-        self.batch_shape = [batch_size, 64, 64, 3]
-        self.real_data = tf.placeholder(tf.float32, self.batch_shape)
-        self.sampled_latent_variables = tf.random_normal([batch_size, 2, 2, 128], stddev=0.01)
+class VanillaGan(nf.AbstractNet):
+    def __init__(self, **kwargs):
+        super().__init__(sess=kwargs.get('sess'))
+        self.batch_size = kwargs.get('batch_size')
+        self.log_path = kwargs.get('log_path')
+        self.sampled_variables = tf.placeholder(tf.float32, [self.batch_size, 100])
+        self.real_data = tf.placeholder(tf.float32, [self.batch_size, 64, 64, 3])
         self.nets = self._build_net()
-        if mode == MODE_FLAG_TRAIN:
-            self.loss = self._get_loss()
-            self.g_step = tf.Variable(0, trainable=False)
-            self.d_step = tf.Variable(0, trainable=False)
-            self.ops = self._get_opt()
-        else:
-            assert self.restore_file is not None
-            init_op = tf.global_variables_initializer()
-            self.sess.run(init_op)
-            self.restore_file()
+        self.loss = self._build_loss()
+        assert self.log_path is not None
 
     def _build_net(self):
-        if self.mode == MODE_FLAG_TRAIN:
-            nets = build_gan(self.sampled_latent_variables, self.real_data)
-            tf.summary.image(NAME_SCOPE_GENERATIVE_NET + '/Image', nets[0])
-            tf.summary.image(NAME_SCOPE_DISCRIMINATIVE_NET + '/Image', self.real_data)
-            tf.summary.histogram(NAME_SCOPE_GENERATIVE_NET + '/LogicSampledDiscrimination', nets[1])
-            tf.summary.histogram(NAME_SCOPE_GENERATIVE_NET + '/HistGenerated', nets[0] * 256.)
-            tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/LogicRealDiscrimination', nets[2])
-            tf.summary.histogram(NAME_SCOPE_DISCRIMINATIVE_NET + '/HistReal', self.real_data)
-            return nets
-        else:
-            with tf.variable_scope(NAME_SCOPE_GENERATIVE_NET):
-                return build_generator(self.sampled_latent_variables)
-
-    def _get_loss(self):
-        losses = loss_func(self.nets[1], self.nets[2])
-        return losses
-
-    def _get_opt(self):
-        opt = tf.train.AdamOptimizer(learning_rate=0.00001)
-        train_list_gen = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=NAME_SCOPE_GENERATIVE_NET)
-        generative_step = opt.minimize(self.loss[0], global_step=self.g_step, var_list=train_list_gen,
-                                       aggregation_method=tf.AggregationMethod.EXPERIMENTAL_ACCUMULATE_N)
-
-        train_list_dis = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=NAME_SCOPE_DISCRIMINATIVE_NET)
-        discriminative_step = opt.minimize(self.loss[1], global_step=self.d_step, var_list=train_list_dis,
-                                           aggregation_method=tf.AggregationMethod.EXPERIMENTAL_ACCUMULATE_N)
-        return generative_step, discriminative_step
-
-    def _restore(self):
-        if self.mode == MODE_FLAG_TRAIN:
-            save_list = tf.trainable_variables()
-        else:
-            save_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=NAME_SCOPE_GENERATIVE_NET)
-        saver = tf.train.Saver(var_list=save_list)
-        return saver.restore(self.sess, self.restore_file)
-
-    def training_loop(self, batch_reader, k=1, max_loop=200000, summary_path='E:\\WorkSpace\\WorkSpace\\TrainingLogs',
-                      snapshot_path='E:\\WorkSpace\\WorkSpace\\SavedModels\\GAN'):
         """
-        The main training loop of gan
-        :param batch_reader: A data reading function pointer
-        :param k: The training interval of the generative net
-        :param max_loop:
-        :param summary_path:
-        :param snapshot_path:
-        :return:
-        """
-        init_op = tf.global_variables_initializer()
-        self.sess.run(init_op)
+        To build the networks
+        :return: ni cai"""
+
+        from util import nets
+        with tf.variable_scope(nf.NAME_SCOPE_GENERATIVE_NET):
+            generative_out = nets.build_generator_new(self.sampled_variables)
+        with tf.variable_scope(nf.NAME_SCOPE_DISCRIMINATIVE_NET):
+            decision_from_gen = nets.net_discriminator_new(generative_out)
+        with tf.variable_scope(nf.NAME_SCOPE_DISCRIMINATIVE_NET, reuse=True):
+            decision_from_real = nets.net_discriminator_new(self.real_data / 255. * 2 - 1)
+
+        tf.summary.image(nf.NAME_SCOPE_GENERATIVE_NET + '/gen_im', generative_out)
+        tf.summary.image(nf.NAME_SCOPE_DISCRIMINATIVE_NET + '/real_im', self.real_data)
+        tf.summary.histogram(nf.NAME_SCOPE_GENERATIVE_NET + '/gen_dec_hist', decision_from_gen)
+        tf.summary.histogram(nf.NAME_SCOPE_DISCRIMINATIVE_NET + '/dis_dec_hist', decision_from_real)
+        tf.summary.histogram(nf.NAME_SCOPE_GENERATIVE_NET + '/gen_im_hist', (generative_out + 1) / 2 * 255.)
+        tf.summary.histogram(nf.NAME_SCOPE_DISCRIMINATIVE_NET + '/real_im_hist', self.real_data)
+
+        return generative_out, decision_from_gen, decision_from_real
+
+
+    def _build_loss(self):
+        loss_gen = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(self.nets[1]), logits=self.nets[1]))
+        loss_dis_fake = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(self.nets[1]), logits=self.nets[1]))
+        loss_dis_real = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(self.nets[2]), logits=self.nets[2]))
+        loss_dis = loss_dis_fake + loss_dis_real
+
+        tf.summary.scalar(nf.NAME_SCOPE_GENERATIVE_NET + '/loss', loss_gen)
+        tf.summary.scalar(nf.NAME_SCOPE_DISCRIMINATIVE_NET + '/loss', loss_dis)
+
+        return loss_gen, loss_dis
+
+    def _build_opt(self):
+        train_list_gen = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=nf.NAME_SCOPE_GENERATIVE_NET)
+        train_list_dis = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=nf.NAME_SCOPE_DISCRIMINATIVE_NET)
+        trainer1 = tf.train.AdamOptimizer(0.0002, beta1=0.5)
+        trainer2 = tf.train.AdamOptimizer(0.0002, beta1=0.5)
+        op_gen = trainer1.minimize(self.loss[0], var_list=train_list_gen, global_step=self.g_step)
+        op_dis = trainer2.minimize(self.loss[1], var_list=train_list_dis, global_step=self.g_step)
+
+        return op_gen, op_dis
+
+    def train(self, max_iter, dataset, restore_file=None):
+        from time import gmtime, strftime
         time_string = strftime("%a%d%b%Y-%H%M%S", gmtime())
-        writer = tf.summary.FileWriter(summary_path + '/' + time_string + '/')
-        saver = tf.train.Saver()
-        summary_gen = tf.summary.merge(tf.get_collection(tf.GraphKeys.SUMMARIES, scope=NAME_SCOPE_GENERATIVE_NET))
-        summary_dis = tf.summary.merge(tf.get_collection(tf.GraphKeys.SUMMARIES, scope=NAME_SCOPE_DISCRIMINATIVE_NET))
-        if self.restore_file is not None:
-            self._restore()
-        for i in range(max_loop):
-            this_batch = batch_reader(i)
-            loss_d, _, summary_dis_out, d_step_out = self.sess.run(
-                [self.loss[1], self.ops[1], summary_dis, self.d_step],
-                feed_dict={self.real_data: this_batch['batch_image']})
-            writer.add_summary(summary_dis_out, global_step=d_step_out)
-            print('Iteration ' + str(i) + ' d-step loss:' + str(loss_d))
-            if (i + 1) % k == 0:
-                loss_g, _, summary_gen_out, g_step_out = self.sess.run(
-                    [self.loss[0], self.ops[0], summary_gen, self.g_step])
-                writer.add_summary(summary_gen_out, global_step=g_step_out)
-                print('Iteration ' + str(i) + ' g-step loss:' + str(loss_g))
+        ops = self._build_opt()
+        initial_op = tf.global_variables_initializer()
+        self.sess.run(initial_op)
+        summary_path = os.path.join(self.log_path, 'log', time_string) + os.sep
+        save_path = os.path.join(self.log_path, 'model') + os.sep
 
-            if (i + 1) % 10000 == 0:
-                saver.save(self.sess, snapshot_path + '/YMModel', i)
+        if not os.path.exists(self.log_path):
+            os.mkdir(self.log_path)
+        if not os.path.exists(save_path):
+            os.mkdir(save_path)
 
-    def forward(self):
-        if self.mode == MODE_FLAG_TRAIN:
-            to_run = self.nets[0]
-        else:
-            to_run = self.nets
-        return self.sess.run(to_run)
+        if restore_file is not None:
+            self._restore(restore_file)
+            print('Model restored.')
 
+        writer = tf.summary.FileWriter(summary_path)
+        summary_gen = tf.summary.merge(tf.get_collection(tf.GraphKeys.SUMMARIES, scope=nf.NAME_SCOPE_GENERATIVE_NET))
+        summary_dis = tf.summary.merge(
+            tf.get_collection(tf.GraphKeys.SUMMARIES, scope=nf.NAME_SCOPE_DISCRIMINATIVE_NET))
+        d_loss = 0
+        g_loss = 0
+        for i in xrange(max_iter):
+            this_batch = dataset.next_batch_train()
+            if i % 2 == 0:
+                noise = dataset.next_batch_noise()
+                g_loss, _, gen_sum = self.sess.run([self.loss[0], ops[0], summary_gen],
+                                                   feed_dict={self.sampled_variables: noise})
+                writer.add_summary(gen_sum, global_step=tf.train.global_step(self.sess, self.g_step))
+            d_loss, _, dis_sum = self.sess.run([self.loss[1], ops[1], summary_dis],
+                                               feed_dict={self.real_data: this_batch[0],
+                                                          self.sampled_variables: this_batch[1]})
+            step = tf.train.global_step(self.sess, self.g_step)
+            writer.add_summary(dis_sum, global_step=step)
+            print(
+                'Batch ' + str(i) + '(Global Step: ' + str(step) + '): ' + str(
+                    g_loss) + '; ' + str(d_loss))
 
-if __name__ == '__main__':
-    """
-    This is the test routine of the WGAN.
-    """
-    print('Now we are going to train the network.')
-    import scipy.io as sio
+            gc.collect()
 
-
-    def reader(i):
-        total_batches = 1000
-        data_folder = 'E:\\WorkSpace\\Data\\Face\\Batch\\'
-        file_name = data_folder + 'batch_' + str(i % total_batches + 1) + '.mat'
-        mat_file = sio.loadmat(file_name)
-        batch = dict()
-        batch['batch_image'] = np.asarray(mat_file['batch_image'], dtype=np.float32) / 256.
-        batch['batch_random'] = np.random.randn(20, 2, 2, 128)
-        return batch
-
-
-    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
-    config.gpu_options.allow_growth = True
-    this_session = tf.Session(config=config)
-    model = Gan(20, this_session)
-    model.training_loop(reader, k=1)
+            if i % 2000 == 0 and i > 0:
+                self._save(save_path, step)
+        return 0
