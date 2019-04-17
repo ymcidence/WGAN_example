@@ -4,6 +4,7 @@ import gc
 from six.moves import xrange
 from model import net_factory as nf
 
+a = 1
 
 class VanillaGan(nf.AbstractNet):
     def __init__(self, **kwargs):
